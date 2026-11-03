@@ -123,6 +123,8 @@ def test_no_my_state_without_county():
 def test_qsl_sent_requested_becomes_queued(config):
     out = apply_import_rules({"QSL_SENT": "R"}, config)
     assert out["QSL_SENT"] == "Q"
+    out = apply_import_rules({"QSL_SENT": "r"}, config)
+    assert out["QSL_SENT"] == "Q"
     out = apply_import_rules({"QSL_SENT": "Y"}, config)
     assert out["QSL_SENT"] == "Y"
 
@@ -170,3 +172,15 @@ def test_truncated_import_is_not_partially_inserted(conn, config):
     with pytest.raises(ValueError, match='Truncated'):
         import_adif_text(conn, '<CALL:4>W1AW<EOR><CALL:99>K1ZZ', config)
     assert conn.execute('SELECT COUNT(*) FROM QSOs').fetchone()[0] == 0
+
+
+def test_import_adif_file_falls_back_to_latin1(tmp_path, conn, config):
+    path = tmp_path / "latin1.adi"
+    raw = (
+        b"<EOH><CALL:4>W1AW<QSO_DATE:8>20240101<TIME_ON:4>1200"
+        b"<BAND:3>20m<MODE:3>SSB<NAME:4>Jos\xe9<EOR>"
+    )
+    path.write_bytes(raw)
+    result = import_adif_file(conn, path, config)
+    assert result.parsed == 1
+    assert result.inserted == 1

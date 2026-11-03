@@ -10,6 +10,10 @@ dependencies = [
     "textual",
     "qrzlib>=2.1,<2.2",
     "pyyaml",
+]
+
+[dependency-groups]
+dev = [
     "pytest",
     "pytest-asyncio",
 ]
@@ -24,6 +28,7 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.hatch.build.targets.wheel]
 packages = ["qsltracker"]

@@ -222,7 +222,7 @@ async def test_add_to_batch_flow_and_last_batch(tmp_path, db_path):
         assert isinstance(app.screen, MainScreen)
         assert op_result(app) == "Added 2 QSOs to batch 'spring'."
         assert app.last_batch_name == "spring"
-        assert list_batches(connect(db_path)) == ["spring"]
+        assert list_batches(app.db) == ["spring"]
         # Queue K1ZZ, then add it via the last-batch shortcut.
         app.screen.query_one("#search-input", Input).value = "k1zz"
         await pilot.click("#search-btn")
@@ -234,7 +234,7 @@ async def test_add_to_batch_flow_and_last_batch(tmp_path, db_path):
         await pilot.click("#op-last-batch")
         await pilot.pause()
         assert op_result(app) == "Added 1 QSOs to batch 'spring'."
-        assert len(get_batch_qsos(connect(db_path), "spring")) == 3
+        assert len(get_batch_qsos(app.db, "spring")) == 3
 
 
 async def test_last_batch_prompts_when_unknown(tmp_path, db_path):
@@ -263,7 +263,7 @@ async def test_batch_validation_error_shown(tmp_path, db_path):
         await pilot.click("#batch-add")
         await pilot.pause()
         assert "QSL_SENT != 'Q'" in op_result(app)
-        assert list_batches(connect(db_path)) == []
+        assert list_batches(app.db) == []
 
 
 async def test_update_from_qrz_flow(tmp_path, db_path, clean_qrz_cache):

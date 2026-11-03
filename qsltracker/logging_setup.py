@@ -23,10 +23,12 @@ def setup_file_logging(config_path: str | Path) -> Path:
     # File-only: never let log records bubble to the console/TUI.
     logger.propagate = False
     wanted = os.path.abspath(log_path)
-    for handler in logger.handlers:
-        if (isinstance(handler, logging.FileHandler)
-                and os.path.abspath(handler.baseFilename) == wanted):
-            return log_path
+    for handler in list(logger.handlers):
+        if isinstance(handler, logging.FileHandler):
+            if os.path.abspath(handler.baseFilename) == wanted:
+                return log_path
+            logger.removeHandler(handler)
+            handler.close()
     handler = logging.FileHandler(log_path, encoding="utf-8")
     handler.setFormatter(
         logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s")

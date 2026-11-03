@@ -253,20 +253,28 @@ name = "qsltracker"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
     { name = "pyyaml" },
     { name = "qrzlib" },
     { name = "textual" },
 ]
 
-[package.metadata]
-requires-dist = [
+[package.dev-dependencies]
+dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
     { name = "pyyaml" },
     { name = "qrzlib", specifier = ">=2.1,<2.2" },
     { name = "textual" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
 ]
 
 [[package]]

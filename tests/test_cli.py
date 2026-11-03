@@ -35,7 +35,9 @@ def test_build_app_missing_config_uses_defaults_without_writing(tmp_path):
     assert app.config.qsos_per_label == 5
     assert app.needs_config is True
     assert not path.exists()
-    assert app.db_path == get_default_db_path()
+    assert not path.parent.exists()
+    assert app.db_path == path.parent / "qsos.db"
+    assert app.db_path == get_default_db_path(path)
 
 
 def test_build_app_loads_existing_config_value(tmp_path):

@@ -130,9 +130,14 @@ def test_via_prefix_sets_qsl_via():
         ("Please QSL via W3JR", "W3JR"),
         ("QSL VIA K9abc", "K9ABC"),
         ("via N0call direct only", "N0CALL"),
+        ("via 9A1AA", "9A1AA"),
+        ("via 3DA0RU", "3DA0RU"),
     ):
         updates = qsl_updates_from_record(make_record(mqsl=1, qslmgr=mgr))
         assert updates["QSL_VIA"] == expected, mgr
+    for non_call in ("Direct via OQRS2", "LOTW2024", "Latvia W3JR", "2024A"):
+        updates = qsl_updates_from_record(make_record(mqsl=1, qslmgr=non_call))
+        assert "QSL_VIA" not in updates, non_call
 
 
 def test_qsl_via_parse_is_logged(caplog):
@@ -258,3 +263,40 @@ def test_uncached_transport_translates_errors(monkeypatch, error):
     expected = QRZ.NotFound if isinstance(error, KeyError) else QRZ.XMLError
     with pytest.raises(expected):
         qrz_module.UncachedQRZ().get_call('W1AW')
+
+
+def test_negative_lookups_are_cached_per_service(service):
+    session = service._session_for_lookup()
+    with pytest.raises(QRZ.NotFound):
+        service.lookup("N0PE")
+    with pytest.raises(QRZ.NotFound):
+        service.lookup("n0pe")
+    assert session.lookups == ["N0PE"]
+
+
+def test_missing_credentials_raise_session_error():
+    svc = QrzService("", "")
+    with pytest.raises(QRZ.SessionError, match="must be configured"):
+        svc.lookup("W1AW")
+
+
+def test_update_from_qrz_auto_removes_q_to_i_from_batch(service, conn):
+    from qsltracker.batches import add_qsos_to_batch, get_batch_qsos
+    insert_qsos(
+        conn,
+        [
+            {"CALL": "W1AW", "STATION_CALLSIGN": "N0CALL",
+             "QSO_DATE": "20240101", "TIME_ON": "1200",
+             "BAND": "20m", "MODE": "SSB", "QSL_SENT": "Q"},
+            {"CALL": "K1ZZ", "STATION_CALLSIGN": "N0CALL",
+             "QSO_DATE": "20240202", "TIME_ON": "1300",
+             "BAND": "40m", "MODE": "CW", "QSL_SENT": "Q"},
+        ],
+    )
+    ids = [row["id"] for row in search_qsos(conn, "W1AW") + search_qsos(conn, "K1ZZ")]
+    add_qsos_to_batch(conn, "spring", ids)
+    session = service._session_for_lookup()
+    session.records["W1AW"] = make_record(mqsl=0, qslmgr="")
+    session.records["K1ZZ"] = make_record(mqsl=1, qslmgr="W3JR")
+    service.update_qsos_from_qrz(conn, ids)
+    assert [q["CALL"] for q in get_batch_qsos(conn, "spring")] == ["K1ZZ"]

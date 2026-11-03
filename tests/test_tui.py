@@ -173,3 +173,19 @@ async def test_truncated_adif_shows_error(tmp_path):
         await pilot.click('#import-btn')
         assert 'Truncated' in app.screen.query_one('#import-result', Static).content
         assert app.db.execute('SELECT COUNT(*) FROM QSOs').fetchone()[0] == 0
+    assert app._db is None
+
+
+async def test_duplicates_modal_escapes_with_many_rows(tmp_path):
+    app = make_app(tmp_path)
+    duplicates = [
+        (f"W{i}AW", "N0CALL", "20240101", "1200", "20M", "SSB")
+        for i in range(100)
+    ]
+    async with app.run_test(size=(80, 24)) as pilot:
+        app.push_screen(DuplicatesScreen(duplicates))
+        await pilot.pause()
+        assert isinstance(app.screen, DuplicatesScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, MainScreen)

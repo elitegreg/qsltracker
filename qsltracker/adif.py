@@ -65,8 +65,13 @@ def parse_adif(text: str) -> list[dict[str, str]]:
 
 
 def parse_adif_file(path: str | Path) -> list[dict[str, str]]:
-    """Parse an ADIF file from disk."""
-    return parse_adif(Path(path).expanduser().read_text(encoding="utf-8"))
+    """Parse an ADIF file from disk (UTF-8 with Latin-1 fallback)."""
+    raw = Path(path).expanduser().read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
+    return parse_adif(text)
 
 
 def _is_set(value: Any) -> bool:
@@ -86,7 +91,7 @@ def apply_import_rules(
     county = normalized.get("MY_CNTY")
     if _is_set(county) and not _is_set(normalized.get("MY_STATE")):
         normalized["MY_STATE"] = str(county).split(",", 1)[0].strip()
-    if normalized.get("QSL_SENT") == "R":
+    if str(normalized.get("QSL_SENT") or "").upper() == "R":
         normalized["QSL_SENT"] = "Q"
     return normalized
 

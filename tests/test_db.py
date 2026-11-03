@@ -219,9 +219,36 @@ def test_inserts_are_not_logged(conn, caplog):
 
 
 def test_call_mode_band_stored_uppercase(conn):
-    db.insert_qsos(conn, [make_qso(call="w1aw", band="20m", mode="ssb")])
+    db.insert_qsos(
+        conn,
+        [
+            make_qso(
+                call="w1aw",
+                station="n0call",
+                band="20m",
+                mode="ssb",
+                SUBMODE="ft4",
+                QSL_SENT="q",
+                QSL_SENT_VIA="b",
+                QSL_RCVD="y",
+                QSL_RCVD_VIA="d",
+                QSL_VIA="w3jr",
+            )
+        ],
+    )
     row = db.search_qsos(conn, "W1AW")[0]
-    assert (row["CALL"], row["BAND"], row["MODE"]) == ("W1AW", "20M", "SSB")
+    assert (
+        row["CALL"],
+        row["STATION_CALLSIGN"],
+        row["BAND"],
+        row["MODE"],
+        row["SUBMODE"],
+        row["QSL_SENT"],
+        row["QSL_SENT_VIA"],
+        row["QSL_RCVD"],
+        row["QSL_RCVD_VIA"],
+        row["QSL_VIA"],
+    ) == ("W1AW", "N0CALL", "20M", "SSB", "FT4", "Q", "B", "Y", "D", "W3JR")
 
 
 def test_duplicates_detected_across_case(conn):

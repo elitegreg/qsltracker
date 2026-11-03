@@ -36,9 +36,10 @@ _NotFound = QRZ.NotFound
 
 ADDRESS_FIELDS = ("name_fmt", "addr1", "addr2", "state", "zip", "country")
 
-CALLSIGN_RE = re.compile(r"[\w\d]+\d+\w+")
-SINGLE_CALLSIGN_RE = re.compile(r"\s*([\w\d]+\d+\w+)\s*")
-VIA_CALLSIGN_RE = re.compile(r"via\s+([\w\d]+\d+\w+)", re.IGNORECASE)
+_CALLSIGN_PATTERN = r"(?:[A-Z]{1,3}|[0-9][A-Z]{1,2})\d+[A-Z0-9]*[A-Z]"
+CALLSIGN_RE = re.compile(_CALLSIGN_PATTERN, re.IGNORECASE)
+SINGLE_CALLSIGN_RE = re.compile(rf"\s*({_CALLSIGN_PATTERN})\s*", re.IGNORECASE)
+VIA_CALLSIGN_RE = re.compile(rf"\bvia\s+({_CALLSIGN_PATTERN})\b", re.IGNORECASE)
 BUREAU_RE = re.compile(r"buro|bureau", re.IGNORECASE)
 
 
@@ -115,6 +116,7 @@ class QrzService:
         self._password = password
         self._session: QRZ | None = None
         self._fetch = functools.lru_cache(maxsize=1024)(self._fetch_uncached)
+        self._not_found: set[str] = set()
 
     @classmethod
     def from_config(cls, config: Config) -> QrzService:
@@ -123,6 +125,10 @@ class QrzService:
 
     def _session_for_lookup(self) -> QRZ:
         if self._session is None:
+            if not self._username or not self._password:
+                raise QRZ.SessionError(
+                    "QRZ username and password must be configured"
+                )
             session = UncachedQRZ()
             session.authenticate(self._username, self._password)
             self._session = session
@@ -133,7 +139,13 @@ class QrzService:
         callsign = (callsign or "").strip().upper()
         if not callsign:
             raise ValueError("callsign must not be blank")
-        return self._fetch(callsign)
+        if callsign in self._not_found:
+            raise _NotFound(callsign)
+        try:
+            return self._fetch(callsign)
+        except _NotFound:
+            self._not_found.add(callsign)
+            raise
 
     def _fetch_uncached(self, callsign: str) -> Any:
         """Fetch a normalized callsign from QRZ (one cache entry per callsign)."""

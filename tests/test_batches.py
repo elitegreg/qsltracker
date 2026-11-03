@@ -311,7 +311,7 @@ def test_export_rewrites_sent_log_without_leftovers(conn, tmp_path):
     leftovers = [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]
     assert leftovers == []
 
-@pytest.mark.parametrize('fields', [{'QSL_SENT': 'I'}, {'QSL_SENT_VIA': 'B'}])
+@pytest.mark.parametrize('fields', [{'QSL_SENT': ''}, {'QSL_SENT_VIA': 'B'}])
 def test_export_revalidates_members(conn, queued_ids, tmp_path, fields):
     from qsltracker.db import update_qso_fields
     add_qsos_to_batch(conn, 'test', queued_ids)
@@ -319,6 +319,17 @@ def test_export_revalidates_members(conn, queued_ids, tmp_path, fields):
     with pytest.raises(BatchError):
         export_batch(conn, 'test', tmp_path / 'run', qrz_service=StubQrzService())
     assert list(tmp_path.iterdir()) == []
+
+
+def test_q_to_i_auto_removes_qso_from_batch(conn, queued_ids, tmp_path):
+    from qsltracker.db import update_qso_fields
+    add_qsos_to_batch(conn, 'test', queued_ids)
+    update_qso_fields(conn, {queued_ids[0]: {'QSL_SENT': 'I'}})
+    remaining = [q['id'] for q in get_batch_qsos(conn, 'test')]
+    assert remaining == queued_ids[1:]
+    result = export_batch(conn, 'test', tmp_path / 'run', qrz_service=StubQrzService())
+    assert result.labels == 2
+    assert get_qso(conn, queued_ids[0])['QSL_SENT'] == 'I'
 
 
 def test_lookup_failure_preserves_previous_export(conn, queued_ids, tmp_path):

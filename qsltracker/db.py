@@ -94,13 +94,16 @@ CREATE TABLE IF NOT EXISTS QSOs (
 
 CREATE TABLE IF NOT EXISTS batch (
     name TEXT,
-    qso_id INTEGER REFERENCES QSOs(id)
+    qso_id INTEGER REFERENCES QSOs(id) ON DELETE CASCADE,
+    UNIQUE (name, qso_id)
 );
 """
 
 
-def get_default_db_path() -> Path:
-    """Return the default database path, honoring the current HOME."""
+def get_default_db_path(config_path: str | Path | None = None) -> Path:
+    """Return the database path next to ``config_path``, or default HOME."""
+    if config_path is not None:
+        return Path(config_path).expanduser().parent / "qsos.db"
     return Path.home() / ".config" / "qsltracker" / "qsos.db"
 
 
@@ -126,15 +129,26 @@ def utc_today_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d")
 
 
-UPPERCASE_COLUMNS = ("CALL", "MODE", "BAND")
+UPPERCASE_COLUMNS = (
+    "CALL",
+    "STATION_CALLSIGN",
+    "BAND",
+    "MODE",
+    "SUBMODE",
+    "QSL_RCVD",
+    "QSL_RCVD_VIA",
+    "QSL_SENT",
+    "QSL_SENT_VIA",
+    "QSL_VIA",
+)
 
 
 def normalize_qso(data: Mapping[str, Any]) -> dict[str, Any]:
     """Project a record onto the 20 tracked columns, blanking missing values.
 
-    ``CALL``, ``MODE``, and ``BAND`` are canonicalized to uppercase so
-    case variants share one identity for duplicate detection, search,
-    and label grouping.
+    Callsign, band/mode, and QSL status/routing columns are canonicalized
+    to uppercase so case variants share one identity for duplicate
+    detection, search, status filtering, and label grouping.
     """
     record = {}
     for column in QSO_COLUMNS:
@@ -232,15 +246,26 @@ def _update_ids(
     ids = list(qso_ids)
     if not ids:
         return 0
-    before = {qso_id: get_qso(conn, qso_id) for qso_id in ids}
     placeholders = ", ".join("?" for _ in ids)
+    before = {
+        row["id"]: dict(row)
+        for row in conn.execute(
+            f"SELECT * FROM QSOs WHERE id IN ({placeholders})", ids
+        ).fetchall()
+    }
     cursor = conn.execute(
         f"UPDATE QSOs SET {set_clause} WHERE id IN ({placeholders})",
         [*params, *ids],
     )
     conn.commit()
+    after = {
+        row["id"]: dict(row)
+        for row in conn.execute(
+            f"SELECT * FROM QSOs WHERE id IN ({placeholders})", ids
+        ).fetchall()
+    }
     for qso_id in ids:
-        _log_row_changes(before[qso_id], get_qso(conn, qso_id), columns)
+        _log_row_changes(before.get(qso_id), after.get(qso_id), columns)
     return cursor.rowcount
 
 
@@ -276,22 +301,30 @@ def update_qso_fields(
 
     ``updates`` maps a QSO id to a ``{column: value}`` mapping. Only the
     ``QSL_*`` routing/status columns may be updated; any other column
-    raises ``ValueError``. Returns the number of rows updated.
+    raises ``ValueError``. When a QSO transitions from ``QSL_SENT = 'Q'``
+    to ``'I'``, it is automatically removed from any batches. Returns the
+    number of rows updated.
     """
-    total = 0
-    for qso_id, fields in updates.items():
+    for fields in updates.values():
         for column in fields:
             if column not in QSL_UPDATE_COLUMNS:
                 raise ValueError(f"Cannot bulk-update column {column!r}")
+    total = 0
+    for qso_id, fields in updates.items():
         if not fields:
             continue
         before = get_qso(conn, qso_id)
+        if before is None:
+            continue
         set_clause = ", ".join(f"{column} = ?" for column in fields)
         cursor = conn.execute(
             f"UPDATE QSOs SET {set_clause} WHERE id = ?",
             [*fields.values(), qso_id],
         )
         total += cursor.rowcount
-        _log_row_changes(before, get_qso(conn, qso_id), fields)
+        after = {**before, **fields}
+        if (before.get("QSL_SENT") or "") == "Q" and (after.get("QSL_SENT") or "") == "I":
+            conn.execute("DELETE FROM batch WHERE qso_id = ?", (qso_id,))
+        _log_row_changes(before, after, fields)
     conn.commit()
     return total

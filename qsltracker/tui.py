@@ -16,7 +16,7 @@ from typing import Any
 from qrzlib import QRZ
 from textual import on
 from textual.app import App, ComposeResult
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
@@ -48,6 +48,7 @@ from qsltracker.db import (
     mark_received,
     search_qsos,
 )
+from qsltracker.logging_setup import setup_file_logging
 from qsltracker.qrz import QrzService
 
 
@@ -106,6 +107,8 @@ def is_unsent(qso: dict[str, Any]) -> bool:
 class ViaModal(ModalScreen):
     """Prompt for the received-via channel (Direct or Bureau)."""
 
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
     def compose(self) -> ComposeResult:
         yield Vertical(
             Label("Card received via:"),
@@ -133,9 +136,14 @@ class ViaModal(ModalScreen):
     def cancel(self) -> None:
         self._choose(None)
 
+    def action_cancel(self) -> None:
+        self._choose(None)
+
 
 class BatchModal(ModalScreen):
     """Prompt for the batch name to add the selected QSOs to."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
 
     def compose(self) -> ComposeResult:
         app = self.app
@@ -150,6 +158,7 @@ class BatchModal(ModalScreen):
         )
 
     @on(Button.Pressed, "#batch-add")
+    @on(Input.Submitted, "#batch-name")
     def add_to_batch(self) -> None:
         name = self.query_one("#batch-name", Input).value.strip()
         if not name:
@@ -170,9 +179,14 @@ class BatchModal(ModalScreen):
     def cancel(self) -> None:
         self.app.pop_screen()
 
+    def action_cancel(self) -> None:
+        self.app.pop_screen()
+
 
 class ExportModal(ModalScreen):
     """Prompt for the batch to export and the base output path."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
 
     def compose(self) -> ComposeResult:
         batches = list_batches(self.app.db)
@@ -194,6 +208,7 @@ class ExportModal(ModalScreen):
         )
 
     @on(Button.Pressed, "#export-go")
+    @on(Input.Submitted, "#export-base")
     def run_export(self) -> None:
         selectors = self.query(Select)
         name = selectors.first().value if selectors else Select.BLANK
@@ -220,9 +235,11 @@ class ExportModal(ModalScreen):
                 qrz_service=QrzService.from_config(app.config),
                 sent_log_path=app.config_path.parent / "all-sent.csv",
             )
-        except (BatchError, ValueError, OSError, QRZ.SessionError,
-                QRZ.NotFound, QRZ.XMLError) as exc:
+        except (BatchError, ValueError, OSError) as exc:
             screen.set_op_result(str(exc))
+            return
+        except (QRZ.SessionError, QRZ.NotFound, QRZ.XMLError) as exc:
+            screen.set_op_result(f"QRZ lookup failed: {exc}")
             return
         screen.run_search(screen.query_one("#search-input", Input).value)
         if result.addresses_path is None:
@@ -238,6 +255,9 @@ class ExportModal(ModalScreen):
 
     @on(Button.Pressed, "#export-cancel")
     def cancel(self) -> None:
+        self.app.pop_screen()
+
+    def action_cancel(self) -> None:
         self.app.pop_screen()
 
 
@@ -293,6 +313,7 @@ class ConfigScreen(Screen):
             {key.replace("-", "_"): value for key, value in values.items()}
         )
         save_config(app.config, app.config_path)
+        setup_file_logging(app.config_path)
         app.needs_config = False
         app.pop_screen()
         app.push_screen(MainScreen())
@@ -301,13 +322,15 @@ class ConfigScreen(Screen):
 class DuplicatesScreen(ModalScreen):
     """Modal listing the duplicate keys from the last import."""
 
+    BINDINGS = [("escape", "close_dialog", "Close")]
+
     def __init__(self, duplicates: list[tuple[Any, ...]]) -> None:
         super().__init__()
         self._duplicates = duplicates
 
     def compose(self) -> ComposeResult:
         lines = [format_duplicate_key(key) for key in self._duplicates]
-        yield Vertical(
+        yield VerticalScroll(
             Label(f"{len(lines)} duplicate QSOs (not imported):"),
             Static("\n".join(lines) or "(none)", id="duplicates-list"),
             Button("Close", id="close-btn", variant="primary"),
@@ -316,6 +339,9 @@ class DuplicatesScreen(ModalScreen):
 
     @on(Button.Pressed, "#close-btn")
     def close_dialog(self) -> None:
+        self.app.pop_screen()
+
+    def action_close_dialog(self) -> None:
         self.app.pop_screen()
 
 
@@ -329,6 +355,7 @@ TABLE_COLUMNS = (
     ("QSL_RCVD", "Rcvd"),
     ("QSL_SENT", "Sent"),
     ("QSL_SENT_VIA", "Via"),
+    ("QSL_VIA", "Mgr"),
 )
 
 
@@ -345,27 +372,42 @@ class MainScreen(Screen):
         yield VerticalScroll(
             Static("", id="status-line"),
             Label("ADIF file to import"),
-            Input(placeholder="/path/to/log.adi", id="adif-path"),
-            Button("Import ADIF", id="import-btn", variant="primary"),
+            Horizontal(
+                Input(placeholder="/path/to/log.adi", id="adif-path"),
+                Button("Import ADIF", id="import-btn", variant="primary"),
+                Button("View duplicates", id="duplicates-btn", disabled=True),
+                classes="input-row",
+            ),
             Static("", id="import-result"),
-            Button("View duplicates", id="duplicates-btn", disabled=True),
             Label("Callsign search"),
-            Input(placeholder="W1AW (blank shows all)", id="search-input"),
-            Button("Search", id="search-btn", variant="primary"),
+            Horizontal(
+                Input(placeholder="W1AW (blank shows all)", id="search-input"),
+                Button("Search", id="search-btn", variant="primary"),
+                classes="input-row",
+            ),
             DataTable(id="qso-table"),
             Static("", id="selection-line"),
-            Button("Select all", id="select-all"),
-            Button("Select unreceived", id="select-unreceived"),
-            Button("Select unsent", id="select-unsent"),
-            Button("Clear selection", id="select-clear"),
-            Button("Mark received…", id="op-received", variant="primary"),
-            Button("Mark queued to send", id="op-queued"),
-            Button("Add to batch…", id="op-batch"),
-            Button("Add to last batch", id="op-last-batch"),
-            Button("Update from QRZ", id="op-qrz"),
-            Button("Export batch…", id="op-export"),
+            Horizontal(
+                Button("Select all", id="select-all"),
+                Button("Select unreceived", id="select-unreceived"),
+                Button("Select unsent", id="select-unsent"),
+                Button("Clear selection", id="select-clear"),
+                classes="button-row",
+            ),
+            Horizontal(
+                Button("Mark received…", id="op-received", variant="primary"),
+                Button("Mark queued to send", id="op-queued"),
+                Button("Add to batch…", id="op-batch"),
+                classes="button-row",
+            ),
+            Horizontal(
+                Button("Add to last batch", id="op-last-batch"),
+                Button("Update from QRZ", id="op-qrz"),
+                Button("Export batch…", id="op-export"),
+                Button("Quit", id="quit-btn"),
+                classes="button-row",
+            ),
             Static("", id="op-result"),
-            Button("Quit", id="quit-btn"),
             id="main",
         )
         yield Footer()
@@ -421,6 +463,7 @@ class MainScreen(Screen):
         self.refresh_table()
 
     @on(Button.Pressed, "#search-btn")
+    @on(Input.Submitted, "#search-input")
     def perform_search(self) -> None:
         self.run_search(self.query_one("#search-input", Input).value)
 
@@ -533,6 +576,7 @@ class MainScreen(Screen):
         self.app.push_screen(ExportModal())
 
     @on(Button.Pressed, "#import-btn")
+    @on(Input.Submitted, "#adif-path")
     def import_adif(self) -> None:
         app = self.app
         path = self.query_one("#adif-path", Input).value.strip()
@@ -570,7 +614,9 @@ class QsltrackerApp(App):
 
     CSS = """
     #qso-table { height: 12; }
-    #main, #config-form { height: 1fr; }
+    #main, #config-form, #duplicates-dialog { height: 1fr; }
+    .input-row, .button-row { height: auto; }
+    .input-row Input { width: 1fr; }
     """
     TITLE = "qsltracker"
     BINDINGS = [("q", "quit", "Quit")]
@@ -598,8 +644,17 @@ class QsltrackerApp(App):
             self._db = connect(self.db_path)
         return self._db
 
+    def close_db(self) -> None:
+        """Close the database connection if open."""
+        if self._db is not None:
+            self._db.close()
+            self._db = None
+
     def on_mount(self) -> None:
         if self.needs_config:
             self.push_screen(ConfigScreen())
         else:
             self.push_screen(MainScreen())
+
+    def on_unmount(self) -> None:
+        self.close_db()

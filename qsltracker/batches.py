@@ -130,7 +130,7 @@ def write_sent_log(conn: sqlite3.Connection, path: str | Path) -> Path:
 def list_batches(conn: sqlite3.Connection) -> list[str]:
     """Return known batch names in first-use order."""
     rows = conn.execute(
-        "SELECT DISTINCT name FROM batch ORDER BY rowid"
+        "SELECT name FROM batch GROUP BY name ORDER BY MIN(rowid)"
     ).fetchall()
     return [row[0] for row in rows]
 
@@ -138,14 +138,11 @@ def list_batches(conn: sqlite3.Connection) -> list[str]:
 def get_batch_qsos(conn: sqlite3.Connection, name: str) -> list[dict[str, Any]]:
     """Return the QSOs in ``name`` ordered by QSO id."""
     rows = conn.execute(
-        "SELECT qso_id FROM batch WHERE name = ? ORDER BY qso_id", (name,)
+        "SELECT QSOs.* FROM QSOs JOIN batch ON QSOs.id = batch.qso_id "
+        "WHERE batch.name = ? ORDER BY batch.qso_id",
+        (name,),
     ).fetchall()
-    qsos = []
-    for row in rows:
-        qso = get_qso(conn, row[0])
-        if qso is not None:
-            qsos.append(qso)
-    return qsos
+    return [dict(row) for row in rows]
 
 
 def _is_bureau(qso: dict[str, Any]) -> bool:
@@ -164,9 +161,16 @@ def add_qsos_to_batch(
     ids = list(qso_ids)
     if not ids:
         return 0
+    placeholders = ", ".join("?" for _ in ids)
+    by_id = {
+        row["id"]: dict(row)
+        for row in conn.execute(
+            f"SELECT * FROM QSOs WHERE id IN ({placeholders})", ids
+        ).fetchall()
+    }
     selected = []
     for qso_id in ids:
-        qso = get_qso(conn, qso_id)
+        qso = by_id.get(qso_id)
         if qso is None:
             raise BatchError(f"QSO id {qso_id} does not exist")
         selected.append(qso)
