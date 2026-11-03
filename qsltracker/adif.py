@@ -1,8 +1,8 @@
 """ADIF 3.1.8 parser and QSO import logic for qsltracker.
 
 Parses ``<TAG:LENGTH[:TYPE]>VALUE`` fields (tag names matched
-case-insensitively), skips the header up to ``<EOH>``, splits records on
-``<EOR>``, and keeps only the 20 tracked columns. Import applies the
+case-insensitively), skips length-delimited field contents and recognizes ``<EOH>`` and
+``<EOR>`` only outside values, and keeps only the 20 tracked columns. Import applies the
 field normalization rules before inserting into the database:
 
 - Unset ``MY_GRIDSQUARE``/``MY_CQ_ZONE``/``MY_ITU_ZONE``/``MY_CNTY`` fall
@@ -23,10 +23,6 @@ from typing import Any
 from qsltracker.config import Config
 from qsltracker.db import QSO_COLUMNS, duplicate_key, insert_qsos
 
-FIELD_RE = re.compile(r"<([A-Za-z0-9_]+):(\d+)(?::[^<>]*)?>")
-EOH_RE = re.compile(r"<eoh>", re.IGNORECASE)
-EOR_RE = re.compile(r"<eor>", re.IGNORECASE)
-
 MY_FALLBACK_FIELDS = ("MY_GRIDSQUARE", "MY_CQ_ZONE", "MY_ITU_ZONE", "MY_CNTY")
 
 
@@ -39,25 +35,32 @@ class ImportResult:
     duplicates: list[tuple[Any, ...]] = field(default_factory=list)
 
 
-def _body_after_header(text: str) -> str:
-    match = EOH_RE.search(text)
-    return text[match.end():] if match else text
-
-
 def parse_adif(text: str) -> list[dict[str, str]]:
-    """Parse ADIF text into a list of records with the tracked fields."""
+    """Parse sequentially, skipping declared lengths even for untracked fields."""
     records = []
-    for segment in EOR_RE.split(_body_after_header(text)):
-        record: dict[str, str] = {}
-        for match in FIELD_RE.finditer(segment):
+    record: dict[str, str] = {}
+    position = 0
+    token = re.compile(r"<EOH>|<EOR>|<([A-Za-z0-9_]+):(\d+)(?::[^<>]*)?>", re.I)
+    while match := token.search(text, position):
+        position = match.end()
+        marker = match.group(0).upper()
+        if marker == "<EOH>":
+            records.clear()
+            record = {}
+        elif marker == "<EOR>":
+            if record:
+                records.append(record)
+            record = {}
+        else:
+            end = position + int(match.group(2))
+            if end > len(text):
+                raise ValueError(f"Truncated ADIF field {match.group(1)}")
             tag = match.group(1).upper()
-            if tag not in QSO_COLUMNS:
-                continue
-            length = int(match.group(2))
-            start = match.end()
-            record[tag] = segment[start:start + length]
-        if record:
-            records.append(record)
+            if tag in QSO_COLUMNS:
+                record[tag] = text[position:end]
+            position = end
+    if record:
+        records.append(record)
     return records
 
 

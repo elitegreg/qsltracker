@@ -80,11 +80,9 @@ def make_app(tmp_path, db_path, **kwargs):
 
 @pytest.fixture
 def clean_qrz_cache(monkeypatch):
-    monkeypatch.setattr(qrz_module, "QRZ", FakeQRZ)
+    monkeypatch.setattr(qrz_module, "UncachedQRZ", FakeQRZ)
     FakeQRZ.records = {}
-    QrzService._fetch.cache_clear()
     yield
-    QrzService._fetch.cache_clear()
     FakeQRZ.records = {}
 
 
@@ -316,6 +314,8 @@ async def test_export_flow(tmp_path, db_path, clean_qrz_cache):
         await pilot.click("#batch-add")
         await pilot.pause()
         assert op_result(app) == "Added 3 QSOs to batch 'spring'."
+        app.screen.query_one("#op-export", Button).focus()
+        await pilot.pause()
         await pilot.click("#op-export")
         await pilot.pause()
         assert isinstance(app.screen, ExportModal)
@@ -353,6 +353,8 @@ async def test_export_bureau_batch_notes_no_addresses(tmp_path):
         conn.close()
     app = make_app(tmp_path, bureau_db)
     async with app.run_test(size=SIZE) as pilot:
+        app.screen.query_one("#op-export", Button).focus()
+        await pilot.pause()
         await pilot.click("#op-export")
         await pilot.pause()
         app.screen.query_one("#export-batch", Select).value = "bureau"
@@ -380,3 +382,37 @@ def test_yaml_round_trip_of_saved_prompt(tmp_path):
     assert load_config(path) == config
     with path.open(encoding="utf-8") as handle:
         assert "my_state" not in handle.read()
+
+
+async def test_small_terminal_can_reach_export(tmp_path, db_path):
+    app = make_app(tmp_path, db_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        button = app.screen.query_one('#op-export', Button)
+        button.focus()
+        await pilot.pause()
+        assert await pilot.click('#op-export')
+        assert isinstance(app.screen, ExportModal)
+
+
+@pytest.mark.parametrize('error', [QRZ.SessionError, QRZ.NotFound, QRZ.XMLError])
+async def test_export_qrz_errors_are_recoverable(tmp_path, db_path, monkeypatch, error):
+    from qsltracker.batches import add_qsos_to_batch
+    conn = connect(db_path)
+    ids = [row['id'] for row in conn.execute('SELECT id FROM QSOs')]
+    from qsltracker.db import mark_queued_to_send
+    mark_queued_to_send(conn, ids)
+    add_qsos_to_batch(conn, 'test', ids)
+    conn.close()
+    def fail(*args, **kwargs):
+        raise error('QRZ failed')
+    monkeypatch.setattr(QrzService, 'address_for_qso', fail)
+    app = make_app(tmp_path, db_path)
+    async with app.run_test(size=(100, 80)) as pilot:
+        app.screen.export_prompt()
+        await pilot.pause()
+        app.screen.query_one('#export-batch', Select).value = 'test'
+        app.screen.query_one('#export-base', Input).value = str(tmp_path / 'run')
+        await pilot.click('#export-go')
+        await pilot.pause()
+        assert isinstance(app.screen, MainScreen)
+        assert 'QRZ failed' in op_result(app)

@@ -1,6 +1,7 @@
 """Unit tests for the QRZ lookup service with mocked qrzlib."""
 
 import logging
+from xml.parsers.expat import ExpatError
 import sqlite3
 from types import SimpleNamespace
 
@@ -58,11 +59,9 @@ class FakeQRZ:
 @pytest.fixture
 def service(monkeypatch):
     FakeQRZ.instances.clear()
-    monkeypatch.setattr(qrz_module, "QRZ", FakeQRZ)
-    QrzService._fetch.cache_clear()
+    monkeypatch.setattr(qrz_module, "UncachedQRZ", FakeQRZ)
     svc = QrzService("testuser", "testpass")
     yield svc
-    QrzService._fetch.cache_clear()
 
 
 @pytest.fixture
@@ -74,8 +73,8 @@ def conn():
     connection.close()
 
 
-def test_lru_cache_uses_maxsize_1024():
-    assert QrzService._fetch.cache_info().maxsize == 1024
+def test_lru_cache_uses_maxsize_1024(service):
+    assert service._fetch.cache_info().maxsize == 1024
 
 
 def test_lookup_authenticates_uppercase_and_caches(service):
@@ -87,7 +86,7 @@ def test_lookup_authenticates_uppercase_and_caches(service):
     assert service.lookup("W1AW") is record
     assert session.lookups == ["W1AW"]
     assert session.authenticated_with == ("testuser", "testpass")
-    info = QrzService._fetch.cache_info()
+    info = service._fetch.cache_info()
     assert info.hits >= 1
 
 
@@ -97,15 +96,11 @@ def test_lookup_blank_callsign_raises(service):
 
 
 def test_from_config_uses_qrz_credentials(monkeypatch):
-    monkeypatch.setattr(qrz_module, "QRZ", FakeQRZ)
-    QrzService._fetch.cache_clear()
-    try:
-        svc = QrzService.from_config(
-            Config(qrz_username="alice", qrz_password="hunter2")
-        )
-        assert (svc._username, svc._password) == ("alice", "hunter2")
-    finally:
-        QrzService._fetch.cache_clear()
+    monkeypatch.setattr(qrz_module, "UncachedQRZ", FakeQRZ)
+    svc = QrzService.from_config(
+        Config(qrz_username="alice", qrz_password="hunter2")
+    )
+    assert (svc._username, svc._password) == ("alice", "hunter2")
 
 
 def test_mqsl_zero_sets_qsl_sent_ignore():
@@ -227,3 +222,39 @@ def test_update_qsos_from_qrz_end_to_end(service, conn):
     second = get_qso(conn, ids[1])
     assert second["QSL_SENT_VIA"] == "B"
     assert get_qso(conn, ids[2])["QSL_SENT"] == ""
+
+
+def test_real_transport_never_opens_sqlite_and_caches_per_service(monkeypatch):
+    import io
+    import qrzlib
+    requests = []
+    def forbidden(*args, **kwargs):
+        pytest.fail('QRZ must not initialize a SQLite cache')
+    monkeypatch.setattr(qrzlib.DBCache, '__init__', forbidden)
+    class Response(io.BytesIO):
+        class headers:
+            @staticmethod
+            def get_content_charset(default):
+                return default
+    def urlopen(url, data, timeout):
+        requests.append(data)
+        if b'username=' in data:
+            return Response(b'<QRZDatabase><Session><Key>test</Key></Session></QRZDatabase>')
+        return Response(b'<QRZDatabase><Callsign><call>W1AW</call><name_fmt>Test</name_fmt></Callsign></QRZDatabase>')
+    monkeypatch.setattr(qrzlib.urllib.request, 'urlopen', urlopen)
+    first = QrzService('user', 'pass')
+    record = first.lookup('w1aw')
+    assert first.lookup(' W1AW ') is record
+    assert len(requests) == 2
+    assert QrzService('user', 'pass').lookup('W1AW') is not record
+    assert len(requests) == 4
+
+
+@pytest.mark.parametrize('error', [KeyError('missing'), ExpatError('xml')])
+def test_uncached_transport_translates_errors(monkeypatch, error):
+    def fail(self, callsign):
+        raise error
+    monkeypatch.setattr(qrz_module.UncachedQRZ, '_get_call', fail)
+    expected = QRZ.NotFound if isinstance(error, KeyError) else QRZ.XMLError
+    with pytest.raises(expected):
+        qrz_module.UncachedQRZ().get_call('W1AW')

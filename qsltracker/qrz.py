@@ -23,6 +23,7 @@ import re
 import sqlite3
 from collections.abc import Iterable
 from typing import Any
+from xml.parsers.expat import ExpatError
 
 from qrzlib import QRZ
 
@@ -85,6 +86,27 @@ def address_from_record(record: Any) -> dict[str, str]:
     return address
 
 
+class UncachedQRZ(QRZ):
+    """qrzlib 2.1 network transport without its SQLite cache."""
+
+    def __init__(self) -> None:
+        # Do not call QRZ.__init__: it unconditionally opens a SQLite cache.
+        self.key = None
+        self.error = None
+        self.count = None
+
+    def __repr__(self) -> str:
+        return f"<UncachedQRZ counter={self.count}>"
+
+    def get_call(self, callsign: str) -> Any:
+        try:
+            return self._get_call(callsign)
+        except KeyError as exc:
+            raise QRZ.NotFound(str(exc)) from exc
+        except ExpatError as exc:
+            raise QRZ.XMLError(str(exc)) from exc
+
+
 class QrzService:
     """Authenticated QRZ lookup service with an in-memory LRU cache."""
 
@@ -92,6 +114,7 @@ class QrzService:
         self._username = username
         self._password = password
         self._session: QRZ | None = None
+        self._fetch = functools.lru_cache(maxsize=1024)(self._fetch_uncached)
 
     @classmethod
     def from_config(cls, config: Config) -> QrzService:
@@ -100,7 +123,7 @@ class QrzService:
 
     def _session_for_lookup(self) -> QRZ:
         if self._session is None:
-            session = QRZ()
+            session = UncachedQRZ()
             session.authenticate(self._username, self._password)
             self._session = session
         return self._session
@@ -112,8 +135,7 @@ class QrzService:
             raise ValueError("callsign must not be blank")
         return self._fetch(callsign)
 
-    @functools.lru_cache(maxsize=1024)
-    def _fetch(self, callsign: str) -> Any:
+    def _fetch_uncached(self, callsign: str) -> Any:
         """Fetch a normalized callsign from QRZ (one cache entry per callsign)."""
         return self._session_for_lookup().get_call(callsign)
 

@@ -8,7 +8,7 @@ license = { text = "MIT" }
 authors = [{ name = "Greg Mitchell" }]
 dependencies = [
     "textual",
-    "qrzlib",
+    "qrzlib>=2.1,<2.2",
     "pyyaml",
     "pytest",
     "pytest-asyncio",

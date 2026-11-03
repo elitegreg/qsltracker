@@ -85,6 +85,8 @@ def mark_batch_sent(
     today = utc_today_str()
     updates: dict[int, dict[str, str]] = {}
     for qso in qsos:
+        if qso.get("QSL_SENT") == "Y":
+            continue
         fields = {"QSL_SENT": "Y", "QSLSDATE": today}
         if not (qso.get("QSL_SENT_VIA") or ""):
             fields["QSL_SENT_VIA"] = "D"
@@ -277,32 +279,56 @@ def export_batch(
     there transactionally.
     """
     qsos = get_batch_qsos(conn, name)
-    is_bureau = bool(qsos) and all(_is_bureau(qso) for qso in qsos)
+    if not qsos:
+        raise BatchError(f"Batch {name!r} is empty or does not exist")
+    if any(qso.get("QSL_SENT") not in ("Q", "Y") for qso in qsos):
+        raise BatchError("Batch members must be queued or already sent")
+    if len({_is_bureau(qso) for qso in qsos}) != 1:
+        raise BatchError("Batch mixes bureau and non-bureau cards")
+    is_bureau = all(_is_bureau(qso) for qso in qsos)
     labels = chunk_labels(qsos, qsos_per_label)
-
-    base_path = Path(base)
+    base_path = Path(base).expanduser()
     qsos_path = base_path.parent / f"{base_path.name}_qsos.csv"
-    qsos_path.parent.mkdir(parents=True, exist_ok=True)
-    with qsos_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(qsos_header(qsos_per_label))
-        for label in labels:
-            writer.writerow(label_row(label, qsos_per_label))
-
     addresses_path = None
+    outputs = [(qsos_path, qsos_header(qsos_per_label),
+                [label_row(label, qsos_per_label) for label in labels])]
     if not is_bureau:
         if qrz_service is None:
-            raise ValueError(
-                "A QRZ service is required to export a non-bureau batch"
-            )
+            raise ValueError("A QRZ service is required to export a non-bureau batch")
         addresses_path = base_path.parent / f"{base_path.name}_addresses.csv"
-        with addresses_path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(list(ADDRESS_COLUMNS))
-            for label in labels:
-                address = qrz_service.address_for_qso(label[0])
-                writer.writerow([_blank(address.get(column))
-                                 for column in ADDRESS_COLUMNS])
+        addresses = [qrz_service.address_for_qso(label[0]) for label in labels]
+        outputs.append((addresses_path, list(ADDRESS_COLUMNS),
+                        [[_blank(address.get(column)) for column in ADDRESS_COLUMNS]
+                         for address in addresses]))
+
+    staged = []
+    originals = {}
+    published = []
+    try:
+        for target, header, rows in outputs:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            originals[target] = target.read_bytes() if target.exists() else None
+            fd, temporary = tempfile.mkstemp(dir=target.parent,
+                                            prefix=target.name + ".", suffix=".tmp")
+            staged.append((target, temporary))
+            with os.fdopen(fd, "w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(header)
+                writer.writerows(rows)
+        for target, temporary in staged:
+            os.replace(temporary, target)
+            published.append(target)
+    except BaseException:
+        for target in reversed(published):
+            original = originals[target]
+            if original is None:
+                target.unlink()
+            else:
+                target.write_bytes(original)
+        raise
+    finally:
+        for _, temporary in staged:
+            Path(temporary).unlink(missing_ok=True)
     marked_sent = mark_batch_sent(conn, qsos) if mark_sent else 0
     if sent_log_path is not None:
         write_sent_log(conn, sent_log_path)

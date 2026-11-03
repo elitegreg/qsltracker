@@ -13,9 +13,10 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from qrzlib import QRZ
 from textual import on
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
@@ -219,9 +220,11 @@ class ExportModal(ModalScreen):
                 qrz_service=QrzService.from_config(app.config),
                 sent_log_path=app.config_path.parent / "all-sent.csv",
             )
-        except (BatchError, ValueError, OSError) as exc:
+        except (BatchError, ValueError, OSError, QRZ.SessionError,
+                QRZ.NotFound, QRZ.XMLError) as exc:
             screen.set_op_result(str(exc))
             return
+        screen.run_search(screen.query_one("#search-input", Input).value)
         if result.addresses_path is None:
             screen.set_op_result(
                 f"Exported {result.labels} labels to {result.qsos_path} "
@@ -244,7 +247,7 @@ class ConfigScreen(Screen):
     def compose(self) -> ComposeResult:
         config = self.app.config
         yield Header()
-        yield Vertical(
+        yield VerticalScroll(
             Label("No config file found. Enter defaults to get started:"),
             Label("QSOs per label"),
             Input(str(config.qsos_per_label), id="qsos-per-label"),
@@ -339,7 +342,7 @@ class MainScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Vertical(
+        yield VerticalScroll(
             Static("", id="status-line"),
             Label("ADIF file to import"),
             Input(placeholder="/path/to/log.adi", id="adif-path"),
@@ -542,7 +545,7 @@ class MainScreen(Screen):
         except FileNotFoundError:
             result_widget.update(f"File not found: {path}")
             return
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             result_widget.update(f"Import failed: {exc}")
             return
         app.last_result = result
@@ -565,6 +568,10 @@ class MainScreen(Screen):
 class QsltrackerApp(App):
     """qsltracker Textual application."""
 
+    CSS = """
+    #qso-table { height: 12; }
+    #main, #config-form { height: 1fr; }
+    """
     TITLE = "qsltracker"
     BINDINGS = [("q", "quit", "Quit")]
 

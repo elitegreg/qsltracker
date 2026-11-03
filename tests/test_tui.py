@@ -153,3 +153,23 @@ async def test_import_empty_path_prompts_for_filename(tmp_path):
         assert "Enter an ADIF filename" in (
             app.screen.query_one("#import-result", Static).content
         )
+
+
+async def test_small_terminal_configuration_save_is_reachable(tmp_path):
+    app = make_app(tmp_path, needs_config=True)
+    async with app.run_test(size=(80, 24)) as pilot:
+        app.screen.query_one('#save-btn', Button).focus()
+        await pilot.pause()
+        assert await pilot.click('#save-btn')
+        assert isinstance(app.screen, MainScreen)
+
+
+async def test_truncated_adif_shows_error(tmp_path):
+    path = tmp_path / 'broken.adi'
+    path.write_text('<CALL:99>W1AW')
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app.screen.query_one('#adif-path', Input).value = str(path)
+        await pilot.click('#import-btn')
+        assert 'Truncated' in app.screen.query_one('#import-result', Static).content
+        assert app.db.execute('SELECT COUNT(*) FROM QSOs').fetchone()[0] == 0

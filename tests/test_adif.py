@@ -159,3 +159,14 @@ def test_import_adif_file(tmp_path, conn, config):
     result = import_adif_file(conn, path, config)
     assert result.parsed == 2
     assert result.inserted == 2
+
+@pytest.mark.parametrize('value', ['<CALL:4>K1ZZ', '<EOR>', '<EOH>'])
+def test_delimiters_in_values_are_literal(value):
+    text = f'<CALL:4>W1AW<COMMENT:{len(value)}>{value}<MODE:2>CW<EOR>'
+    assert parse_adif(text) == [{'CALL': 'W1AW', 'MODE': 'CW'}]
+
+
+def test_truncated_import_is_not_partially_inserted(conn, config):
+    with pytest.raises(ValueError, match='Truncated'):
+        import_adif_text(conn, '<CALL:4>W1AW<EOR><CALL:99>K1ZZ', config)
+    assert conn.execute('SELECT COUNT(*) FROM QSOs').fetchone()[0] == 0

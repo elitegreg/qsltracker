@@ -265,7 +265,7 @@ requires-dist = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pyyaml" },
-    { name = "qrzlib" },
+    { name = "qrzlib", specifier = ">=2.1,<2.2" },
     { name = "textual" },
 ]
 

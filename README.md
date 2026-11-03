@@ -45,3 +45,13 @@ default):
 ```sh
 uv run pytest
 ```
+
+QRZ records are cached only in memory, using a separate
+`functools.lru_cache(maxsize=1024)` for each update or export operation.
+No QRZ SQLite cache is opened or created; existing QRZ cache files are unused.
+
+Exports validate current batch routing and status. Queued and previously sent
+QSOs may be exported; reprinting preserves existing sent dates. Address lookup
+and CSV staging finish before existing output files are replaced. Runtime
+publication failures restore previous outputs; replacement of multiple files
+is not atomic across a process crash.

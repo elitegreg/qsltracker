@@ -310,3 +310,62 @@ def test_export_rewrites_sent_log_without_leftovers(conn, tmp_path):
     assert len(rows) == 2
     leftovers = [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]
     assert leftovers == []
+
+@pytest.mark.parametrize('fields', [{'QSL_SENT': 'I'}, {'QSL_SENT_VIA': 'B'}])
+def test_export_revalidates_members(conn, queued_ids, tmp_path, fields):
+    from qsltracker.db import update_qso_fields
+    add_qsos_to_batch(conn, 'test', queued_ids)
+    update_qso_fields(conn, {queued_ids[0]: fields})
+    with pytest.raises(BatchError):
+        export_batch(conn, 'test', tmp_path / 'run', qrz_service=StubQrzService())
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_lookup_failure_preserves_previous_export(conn, queued_ids, tmp_path):
+    add_qsos_to_batch(conn, 'test', queued_ids)
+    qso_file = tmp_path / 'run_qsos.csv'
+    addr_file = tmp_path / 'run_addresses.csv'
+    qso_file.write_text('old qsos')
+    addr_file.write_text('old addresses')
+    class FailingService:
+        def address_for_qso(self, qso):
+            raise RuntimeError('lookup failed')
+    with pytest.raises(RuntimeError):
+        export_batch(conn, 'test', tmp_path / 'run', qrz_service=FailingService())
+    assert qso_file.read_text() == 'old qsos'
+    assert addr_file.read_text() == 'old addresses'
+    assert all(get_qso(conn, i)['QSL_SENT'] == 'Q' for i in queued_ids)
+
+
+@pytest.mark.parametrize('failure', ['staging', 'publication'])
+def test_export_file_failure_restores_originals(conn, queued_ids, tmp_path, monkeypatch, failure):
+    import qsltracker.batches as module
+    add_qsos_to_batch(conn, 'test', queued_ids)
+    files = [tmp_path / 'run_qsos.csv', tmp_path / 'run_addresses.csv']
+    for path in files:
+        path.write_text('original')
+    owner = module.tempfile if failure == 'staging' else module.os
+    method = 'mkstemp' if failure == 'staging' else 'replace'
+    real = getattr(owner, method)
+    calls = 0
+    def fail_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError('injected failure')
+        return real(*args, **kwargs)
+    monkeypatch.setattr(owner, method, fail_second)
+    with pytest.raises(OSError):
+        export_batch(conn, 'test', tmp_path / 'run', qrz_service=StubQrzService())
+    assert [p.read_text() for p in files] == ['original', 'original']
+    assert not list(tmp_path.glob('*.tmp'))
+    assert all(get_qso(conn, i)['QSL_SENT'] == 'Q' for i in queued_ids)
+
+
+def test_reexport_preserves_sent_date(conn, queued_ids, tmp_path):
+    from qsltracker.db import update_qso_fields
+    add_qsos_to_batch(conn, 'test', queued_ids)
+    update_qso_fields(conn, {i: {'QSL_SENT': 'Y', 'QSLSDATE': '20200101'} for i in queued_ids})
+    result = export_batch(conn, 'test', tmp_path / 'run', qrz_service=StubQrzService())
+    assert result.marked_sent == 0
+    assert all(get_qso(conn, i)['QSLSDATE'] == '20200101' for i in queued_ids)
