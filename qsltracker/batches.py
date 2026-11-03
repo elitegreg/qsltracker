@@ -10,20 +10,26 @@ Batches group QSOs for label printing. Adding QSOs to a batch validates:
 Export writes ``<base>_qsos.csv`` label records (grouped QSOs sharing one
 address label, split into chunks of ``qsos_per_label``) and, for
 non-bureau batches, a 1-to-1 ``<base>_addresses.csv`` with postal
-addresses from the cached QRZ service.
+addresses from the cached QRZ service. Exported QSOs are marked sent,
+and a DB-wide ``all-sent.csv`` log can be rewritten transactionally.
 """
 
 from __future__ import annotations
 
 import csv
+import logging
+import os
 import sqlite3
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from qsltracker.config import DEFAULT_QSOS_PER_LABEL
-from qsltracker.db import get_qso
+from qsltracker.db import get_qso, update_qso_fields, utc_today_str
+
+logger = logging.getLogger("qsltracker.export")
 
 LABEL_GROUP_COLUMNS = (
     "CALL",
@@ -53,6 +59,70 @@ class ExportResult:
     addresses_path: Path | None
     labels: int
     is_bureau: bool
+    marked_sent: int = 0
+
+
+SENT_LOG_COLUMNS = (
+    "CALL",
+    "STATION_CALLSIGN",
+    "QSO_DATE",
+    "TIME_ON",
+    "BAND",
+    "MODE",
+    "SUBMODE",
+    "QSL_SENT_VIA",
+)
+
+
+def mark_batch_sent(
+    conn: sqlite3.Connection, qsos: list[dict[str, Any]]
+) -> int:
+    """Mark exported QSOs sent (``QSL_SENT = 'Y'`` with today's UTC date).
+
+    ``QSLSDATE`` is set to today and blank ``QSL_SENT_VIA`` values default
+    to ``'D'`` (Direct). Returns the number of rows updated.
+    """
+    today = utc_today_str()
+    updates: dict[int, dict[str, str]] = {}
+    for qso in qsos:
+        fields = {"QSL_SENT": "Y", "QSLSDATE": today}
+        if not (qso.get("QSL_SENT_VIA") or ""):
+            fields["QSL_SENT_VIA"] = "D"
+        updates[qso["id"]] = fields
+    return update_qso_fields(conn, updates)
+
+
+def write_sent_log(conn: sqlite3.Connection, path: str | Path) -> Path:
+    """Write the DB-wide sent-QSO log (``QSL_SENT = 'Y'``) transactionally.
+
+    The file is written to a temp file in the target directory and moved
+    into place, so readers never see a partial log.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    rows = conn.execute(
+        "SELECT * FROM QSOs WHERE QSL_SENT = 'Y' ORDER BY id"
+    ).fetchall()
+    fd, tmp_name = tempfile.mkstemp(
+        dir=target.parent, prefix=target.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(list(SENT_LOG_COLUMNS))
+            for row in rows:
+                writer.writerow(
+                    ["" if row[column] is None else str(row[column])
+                     for column in SENT_LOG_COLUMNS]
+                )
+        os.replace(tmp_name, target)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return target
 
 
 def list_batches(conn: sqlite3.Connection) -> list[str]:
@@ -194,12 +264,17 @@ def export_batch(
     base: str | Path,
     qsos_per_label: int = DEFAULT_QSOS_PER_LABEL,
     qrz_service: Any = None,
+    mark_sent: bool = True,
+    sent_log_path: str | Path | None = None,
 ) -> ExportResult:
     """Export ``name`` to ``<base>_qsos.csv`` (and addresses when direct).
 
     Bureau batches (every QSO sent via ``'B'``) produce no
     ``<base>_addresses.csv``. Direct batches need a QRZ service exposing
     ``address_for_qso(qso)``; one address row is written per label row.
+    Exported QSOs are marked sent (``QSL_SENT = 'Y'``), and when
+    ``sent_log_path`` is given the DB-wide sent-QSO log is rewritten
+    there transactionally.
     """
     qsos = get_batch_qsos(conn, name)
     is_bureau = bool(qsos) and all(_is_bureau(qso) for qso in qsos)
@@ -228,9 +303,21 @@ def export_batch(
                 address = qrz_service.address_for_qso(label[0])
                 writer.writerow([_blank(address.get(column))
                                  for column in ADDRESS_COLUMNS])
+    marked_sent = mark_batch_sent(conn, qsos) if mark_sent else 0
+    if sent_log_path is not None:
+        write_sent_log(conn, sent_log_path)
+    logger.info(
+        "exported batch %r: %d labels -> %s%s; marked %d QSOs sent",
+        name,
+        len(labels),
+        qsos_path,
+        f" and {addresses_path}" if addresses_path is not None else "",
+        marked_sent,
+    )
     return ExportResult(
         qsos_path=qsos_path,
         addresses_path=addresses_path,
         labels=len(labels),
         is_bureau=is_bureau,
+        marked_sent=marked_sent,
     )

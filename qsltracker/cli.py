@@ -14,6 +14,7 @@ from qsltracker.config import (
     load_config,
 )
 from qsltracker.db import get_default_db_path
+from qsltracker.logging_setup import setup_file_logging
 from qsltracker.tui import QsltrackerApp
 
 QSOS_PER_LABEL_FLAG = "--qsos-per-label"
@@ -69,6 +70,7 @@ def build_app(argv: list[str] | None = None) -> QsltrackerApp:
     else:
         config = Config(qsos_per_label=args.qsos_per_label)
         needs_config = True
+    setup_file_logging(config_path)
     return QsltrackerApp(
         config=config,
         config_path=config_path,

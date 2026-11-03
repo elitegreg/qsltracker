@@ -1,5 +1,6 @@
 """Unit tests for the SQLite schema and data access layer."""
 
+import logging
 import sqlite3
 
 import pytest
@@ -177,10 +178,50 @@ def test_update_qso_fields_rejects_non_qsl_columns(conn):
     assert db.get_qso(conn, qso_id)["CALL"] == "W1AW"
 
 
+def test_mark_received_logs_key_columns_and_changes(conn, caplog):
+    db.insert_qsos(conn, [make_qso()])
+    qso_id = db.search_qsos(conn, "W1AW")[0]["id"]
+    with caplog.at_level(logging.INFO, logger="qsltracker"):
+        assert db.mark_received(conn, [qso_id], "D") == 1
+    assert "W1AW N0CALL 20240101 1200 20m SSB" in caplog.text
+    assert "QSL_RCVD ''->'Y'" in caplog.text
+    assert "QSL_RCVD_VIA ''->'D'" in caplog.text
+
+
+def test_mark_queued_logs_change(conn, caplog):
+    db.insert_qsos(conn, [make_qso()])
+    qso_id = db.search_qsos(conn, "W1AW")[0]["id"]
+    with caplog.at_level(logging.INFO, logger="qsltracker"):
+        db.mark_queued_to_send(conn, [qso_id])
+    assert "QSL_SENT ''->'Q'" in caplog.text
+
+
+def test_no_log_when_update_changes_nothing(conn, caplog):
+    db.insert_qsos(conn, [make_qso(QSL_SENT="Q")])
+    qso_id = db.search_qsos(conn, "W1AW")[0]["id"]
+    with caplog.at_level(logging.INFO, logger="qsltracker"):
+        db.mark_queued_to_send(conn, [qso_id])
+    assert caplog.text == ""
+
+
+def test_update_qso_fields_logs_routing_changes(conn, caplog):
+    db.insert_qsos(conn, [make_qso()])
+    qso_id = db.search_qsos(conn, "W1AW")[0]["id"]
+    with caplog.at_level(logging.INFO, logger="qsltracker"):
+        db.update_qso_fields(conn, {qso_id: {"QSL_SENT": "I"}})
+    assert "QSL_SENT ''->'I'" in caplog.text
+
+
+def test_inserts_are_not_logged(conn, caplog):
+    with caplog.at_level(logging.INFO, logger="qsltracker"):
+        db.insert_qsos(conn, [make_qso()])
+    assert caplog.text == ""
+
+
 def test_connect_creates_schema_and_default_db_path(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     path = db.get_default_db_path()
-    assert str(path).startswith(str(tmp_path))
+    assert path == tmp_path / ".config" / "qsltracker" / "qsos.db"
     connection = db.connect(path)
     try:
         inserted, _ = db.insert_qsos(connection, [make_qso()])

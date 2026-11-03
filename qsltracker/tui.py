@@ -217,6 +217,7 @@ class ExportModal(ModalScreen):
                 base,
                 qsos_per_label=app.config.qsos_per_label,
                 qrz_service=QrzService.from_config(app.config),
+                sent_log_path=app.config_path.parent / "all-sent.csv",
             )
         except (BatchError, ValueError, OSError) as exc:
             screen.set_op_result(str(exc))

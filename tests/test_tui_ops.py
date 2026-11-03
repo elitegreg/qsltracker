@@ -331,6 +331,11 @@ async def test_export_flow(tmp_path, db_path, clean_qrz_cache):
         assert qsos_csv.is_file()
         assert addr_csv.is_file()
         assert len(addr_csv.read_text().strip().splitlines()) == 3
+        sent_log = tmp_path / "all-sent.csv"
+        assert sent_log.is_file()
+        lines = sent_log.read_text().strip().splitlines()
+        assert lines[0].startswith("CALL,STATION_CALLSIGN,QSO_DATE")
+        assert len(lines) == 4
 
 
 async def test_export_bureau_batch_notes_no_addresses(tmp_path):
@@ -358,6 +363,9 @@ async def test_export_bureau_batch_notes_no_addresses(tmp_path):
         assert "no address labels" in op_result(app)
         assert (tmp_path / "out_qsos.csv").is_file()
         assert not (tmp_path / "out_addresses.csv").exists()
+        sent_rows = (tmp_path / "all-sent.csv").read_text().strip().splitlines()
+        assert len(sent_rows) == 2
+        assert sent_rows[1].startswith("W2BU,N0CALL")
 
 
 def test_yaml_round_trip_of_saved_prompt(tmp_path):

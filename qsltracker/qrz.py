@@ -18,12 +18,15 @@ Update-from-QRZ rules applied per selected QSO:
 from __future__ import annotations
 
 import functools
+import logging
 import re
 import sqlite3
 from collections.abc import Iterable
 from typing import Any
 
 from qrzlib import QRZ
+
+logger = logging.getLogger("qsltracker.qrz")
 
 from qsltracker.config import Config
 from qsltracker.db import get_qso, update_qso_fields
@@ -63,6 +66,13 @@ def qsl_updates_from_record(record: Any) -> dict[str, str]:
         single_match = SINGLE_CALLSIGN_RE.fullmatch(mgr)
         if single_match:
             updates["QSL_VIA"] = single_match.group(1).upper()
+    if "QSL_VIA" in updates:
+        logger.info(
+            "qslmgr=%r -> QSL_VIA=%r bureau=%s",
+            mgr,
+            updates["QSL_VIA"],
+            updates.get("QSL_SENT_VIA") == "B",
+        )
     return updates
 
 

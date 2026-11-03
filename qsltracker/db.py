@@ -10,11 +10,14 @@ Tables:
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("qsltracker.db")
 
 QSO_COLUMNS = (
     "CALL",
@@ -98,7 +101,7 @@ CREATE TABLE IF NOT EXISTS batch (
 
 def get_default_db_path() -> Path:
     """Return the default database path, honoring the current HOME."""
-    return Path.home() / ".config" / "qsltracker" / "qsltracker.db"
+    return Path.home() / ".config" / "qsltracker" / "qsos.db"
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
@@ -189,18 +192,45 @@ def list_all_qsos(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def _format_key(record: Mapping[str, Any]) -> str:
+    """Render the 6-column uniqueness key of a QSO record for log lines."""
+    return " ".join(str(record.get(column) or "") for column in DUPLICATE_KEY_COLUMNS)
+
+
+def _log_row_changes(
+    before: dict[str, Any] | None, after: dict[str, Any] | None, columns: Iterable[str]
+) -> None:
+    """Log one line per changed column (key columns, then the change)."""
+    if before is None or after is None:
+        return
+    changes = [
+        f"{column} {before.get(column) or ''!r}->{after.get(column) or ''!r}"
+        for column in columns
+        if (before.get(column) or "") != (after.get(column) or "")
+    ]
+    if changes:
+        logger.info("%s: %s", _format_key(before), ", ".join(changes))
+
+
 def _update_ids(
-    conn: sqlite3.Connection, set_clause: str, params: list[Any], qso_ids: Iterable[int]
+    conn: sqlite3.Connection,
+    set_clause: str,
+    params: list[Any],
+    columns: Iterable[str],
+    qso_ids: Iterable[int],
 ) -> int:
     ids = list(qso_ids)
     if not ids:
         return 0
+    before = {qso_id: get_qso(conn, qso_id) for qso_id in ids}
     placeholders = ", ".join("?" for _ in ids)
     cursor = conn.execute(
         f"UPDATE QSOs SET {set_clause} WHERE id IN ({placeholders})",
         [*params, *ids],
     )
     conn.commit()
+    for qso_id in ids:
+        _log_row_changes(before[qso_id], get_qso(conn, qso_id), columns)
     return cursor.rowcount
 
 
@@ -219,13 +249,14 @@ def mark_received(
         conn,
         "QSL_RCVD = 'Y', QSLRDATE = ?, QSL_RCVD_VIA = ?",
         [utc_today_str(), via],
+        ("QSL_RCVD", "QSLRDATE", "QSL_RCVD_VIA"),
         qso_ids,
     )
 
 
 def mark_queued_to_send(conn: sqlite3.Connection, qso_ids: Iterable[int]) -> int:
     """Mark QSOs queued to send (``QSL_SENT = 'Q'``)."""
-    return _update_ids(conn, "QSL_SENT = 'Q'", [], qso_ids)
+    return _update_ids(conn, "QSL_SENT = 'Q'", [], ("QSL_SENT",), qso_ids)
 
 
 def update_qso_fields(
@@ -244,11 +275,13 @@ def update_qso_fields(
                 raise ValueError(f"Cannot bulk-update column {column!r}")
         if not fields:
             continue
+        before = get_qso(conn, qso_id)
         set_clause = ", ".join(f"{column} = ?" for column in fields)
         cursor = conn.execute(
             f"UPDATE QSOs SET {set_clause} WHERE id = ?",
             [*fields.values(), qso_id],
         )
         total += cursor.rowcount
+        _log_row_changes(before, get_qso(conn, qso_id), fields)
     conn.commit()
     return total

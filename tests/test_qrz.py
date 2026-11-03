@@ -1,5 +1,6 @@
 """Unit tests for the QRZ lookup service with mocked qrzlib."""
 
+import logging
 import sqlite3
 from types import SimpleNamespace
 
@@ -137,6 +138,22 @@ def test_via_prefix_sets_qsl_via():
     ):
         updates = qsl_updates_from_record(make_record(mqsl=1, qslmgr=mgr))
         assert updates["QSL_VIA"] == expected, mgr
+
+
+def test_qsl_via_parse_is_logged(caplog):
+    with caplog.at_level(logging.INFO, logger="qsltracker"):
+        updates = qsl_updates_from_record(
+            make_record(mqsl=0, qslmgr="Bureau or via W3JR"))
+    assert updates["QSL_VIA"] == "W3JR"
+    assert "qslmgr='Bureau or via W3JR'" in caplog.text
+    assert "QSL_VIA='W3JR'" in caplog.text
+    assert "bureau=True" in caplog.text
+
+
+def test_no_log_when_no_qsl_via_parsed(caplog):
+    with caplog.at_level(logging.INFO, logger="qsltracker"):
+        qsl_updates_from_record(make_record(mqsl=1, qslmgr="direct"))
+    assert caplog.text == ""
 
 
 def test_combined_mqsl_bureau_and_via_rules():

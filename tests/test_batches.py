@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 
 from qsltracker.batches import (
+    SENT_LOG_COLUMNS,
     BatchError,
     add_qsos_to_batch,
     chunk_labels,
@@ -13,9 +14,17 @@ from qsltracker.batches import (
     get_batch_qsos,
     label_row,
     list_batches,
+    mark_batch_sent,
     qsos_header,
+    write_sent_log,
 )
-from qsltracker.db import init_schema, insert_qsos, search_qsos
+from qsltracker.db import (
+    get_qso,
+    init_schema,
+    insert_qsos,
+    search_qsos,
+    utc_today_str,
+)
 
 
 class StubQrzService:
@@ -237,3 +246,67 @@ def test_unset_values_export_as_blank(conn, tmp_path):
                  qrz_service=StubQrzService())
     row = read_csv(tmp_path / "blank_qsos.csv")[1]
     assert row[2:8] == ["", "", "", "", "", ""]
+
+
+def test_export_marks_qsos_sent_with_direct_default(conn, tmp_path):
+    insert_qsos(conn, [make_qso(date="20240101", time="1200")])
+    qso_id = search_qsos(conn, "W1AW")[0]["id"]
+    add_qsos_to_batch(conn, "direct", [qso_id])
+    result = export_batch(conn, "direct", tmp_path / "run",
+                          qrz_service=StubQrzService())
+    assert result.marked_sent == 1
+    row = get_qso(conn, qso_id)
+    assert row["QSL_SENT"] == "Y"
+    assert row["QSLSDATE"] == utc_today_str()
+    assert row["QSL_SENT_VIA"] == "D"
+
+
+def test_mark_sent_keeps_bureau_via(conn):
+    insert_qsos(conn, [make_qso(via="B")])
+    qso = search_qsos(conn, "W1AW")[0]
+    assert mark_batch_sent(conn, [qso]) == 1
+    row = get_qso(conn, qso["id"])
+    assert (row["QSL_SENT"], row["QSLSDATE"], row["QSL_SENT_VIA"]) == (
+        "Y", utc_today_str(), "B")
+
+
+def test_export_without_mark_sent_leaves_db_untouched(conn, tmp_path):
+    insert_qsos(conn, [make_qso()])
+    qso_id = search_qsos(conn, "W1AW")[0]["id"]
+    add_qsos_to_batch(conn, "direct", [qso_id])
+    result = export_batch(conn, "direct", tmp_path / "run",
+                          qrz_service=StubQrzService(), mark_sent=False)
+    assert result.marked_sent == 0
+    assert get_qso(conn, qso_id)["QSL_SENT"] == "Q"
+
+
+def test_write_sent_log_lists_sent_qsos_only(conn, tmp_path):
+    insert_qsos(conn, [make_qso(date="20240101", time="1200"),
+                       make_qso(date="20240102", time="1200"),
+                       make_qso(call="K1ZZ", date="20240103", time="1300")])
+    ids = ([r["id"] for r in search_qsos(conn, "W1AW")]
+           + [r["id"] for r in search_qsos(conn, "K1ZZ")])
+    from qsltracker.db import mark_queued_to_send
+    mark_queued_to_send(conn, ids[:2])
+    mark_batch_sent(conn, [search_qsos(conn, "W1AW")[0]])
+    path = write_sent_log(conn, tmp_path / "all-sent.csv")
+    rows = read_csv(path)
+    assert rows[0] == list(SENT_LOG_COLUMNS)
+    assert [row[0] for row in rows[1:]] == ["W1AW"]
+    assert rows[1][:8] == ["W1AW", "N0CALL", "20240101", "1200",
+                           "20m", "SSB", "", "D"]
+
+
+def test_export_rewrites_sent_log_without_leftovers(conn, tmp_path):
+    insert_qsos(conn, [make_qso()])
+    qso_id = search_qsos(conn, "W1AW")[0]["id"]
+    add_qsos_to_batch(conn, "direct", [qso_id])
+    log = tmp_path / "all-sent.csv"
+    export_batch(conn, "direct", tmp_path / "run",
+                 qrz_service=StubQrzService(), sent_log_path=log)
+    export_batch(conn, "direct", tmp_path / "run",
+                 qrz_service=StubQrzService(), sent_log_path=log)
+    rows = read_csv(log)
+    assert len(rows) == 2
+    leftovers = [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]
+    assert leftovers == []

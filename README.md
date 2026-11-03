@@ -29,6 +29,17 @@ uv run qsltracker --qsos-per-label 3
 There is intentionally no `my_state` setting; it is derived from
 `my_cnty` during ADIF import.
 
+## Files
+
+Everything lives next to the config file (`~/.config/qsltracker/` by
+default):
+
+- `qsos.db` — the SQLite database.
+- `qsltracker.log` — QSL field changes and `QSL_VIA` parse notes
+  (ADIF imports are not logged).
+- `all-sent.csv` — regenerated on every label export, listing all
+  QSOs with `QSL_SENT='Y'` across the database.
+
 ## Tests
 
 ```sh
