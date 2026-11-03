@@ -12,8 +12,9 @@ from qsltracker.config import (
     config_file_exists,
     get_default_config_path,
     load_config,
-    save_config,
 )
+from qsltracker.db import get_default_db_path
+from qsltracker.tui import QsltrackerApp
 
 QSOS_PER_LABEL_FLAG = "--qsos-per-label"
 
@@ -50,27 +51,36 @@ def _flag_given_explicitly(raw_args: list[str], flag: str) -> bool:
     return any(arg == flag or arg.startswith(flag + "=") for arg in raw_args)
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Entry point for the ``qsltracker`` console script."""
+def build_app(argv: list[str] | None = None) -> QsltrackerApp:
+    """Build the Textual app from CLI options without running it.
+
+    When the config file does not exist, in-memory defaults are used and
+    the app opens the first-run configuration prompt, which persists the
+    file on save.
+    """
     args = parse_args(argv)
     raw_args = list(sys.argv[1:] if argv is None else argv)
     config_path = Path(args.config).expanduser()
-
     if config_file_exists(config_path):
         config = load_config(config_path)
+        needs_config = False
         if _flag_given_explicitly(raw_args, QSOS_PER_LABEL_FLAG):
             config.qsos_per_label = args.qsos_per_label
     else:
         config = Config(qsos_per_label=args.qsos_per_label)
-        save_config(config, config_path)
-        print(f"No config file found; wrote defaults to {config_path}")
-
-    print(
-        f"Using config: {config_path} "
-        f"(qsos_per_label={config.qsos_per_label})"
+        needs_config = True
+    return QsltrackerApp(
+        config=config,
+        config_path=config_path,
+        db_path=get_default_db_path(),
+        needs_config=needs_config,
     )
-    return 0
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Entry point for the ``qsltracker`` console script."""
+    build_app(argv).run()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
