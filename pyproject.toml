@@ -1,0 +1,27 @@
+[project]
+name = "qsltracker"
+version = "0.1.0"
+description = "Amateur radio QSL card tracker with a Textual TUI"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Greg Mitchell" }]
+dependencies = [
+    "textual",
+    "qrzlib",
+    "pyyaml",
+    "pytest",
+]
+
+[project.scripts]
+qsltracker = "qsltracker.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["qsltracker"]
