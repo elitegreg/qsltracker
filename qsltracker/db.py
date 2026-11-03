@@ -126,12 +126,22 @@ def utc_today_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d")
 
 
+UPPERCASE_COLUMNS = ("CALL", "MODE", "BAND")
+
+
 def normalize_qso(data: Mapping[str, Any]) -> dict[str, Any]:
-    """Project a record onto the 20 tracked columns, blanking missing values."""
+    """Project a record onto the 20 tracked columns, blanking missing values.
+
+    ``CALL``, ``MODE``, and ``BAND`` are canonicalized to uppercase so
+    case variants share one identity for duplicate detection, search,
+    and label grouping.
+    """
     record = {}
     for column in QSO_COLUMNS:
         value = data.get(column)
         record[column] = "" if value is None else value
+    for column in UPPERCASE_COLUMNS:
+        record[column] = str(record[column]).upper()
     return record
 
 

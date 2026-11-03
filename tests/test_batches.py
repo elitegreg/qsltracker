@@ -294,7 +294,7 @@ def test_write_sent_log_lists_sent_qsos_only(conn, tmp_path):
     assert rows[0] == list(SENT_LOG_COLUMNS)
     assert [row[0] for row in rows[1:]] == ["W1AW"]
     assert rows[1][:8] == ["W1AW", "N0CALL", "20240101", "1200",
-                           "20m", "SSB", "", "D"]
+                           "20M", "SSB", "", "D"]
 
 
 def test_export_rewrites_sent_log_without_leftovers(conn, tmp_path):

@@ -59,11 +59,11 @@ def test_config_from_fields_falls_back_on_bad_input():
 def test_format_helpers():
     result = ImportResult(
         parsed=2, inserted=1,
-        duplicates=[("W1AW", "N0CALL", "20240101", "1200", "20m", "SSB")],
+        duplicates=[("W1AW", "N0CALL", "20240101", "1200", "20M", "SSB")],
     )
     assert format_import_result(result) == "Imported 1 of 2 QSOs (1 duplicates)."
     assert format_duplicate_key(result.duplicates[0]) == (
-        "W1AW | N0CALL | 20240101 | 1200 | 20m | SSB"
+        "W1AW | N0CALL | 20240101 | 1200 | 20M | SSB"
     )
 
 
@@ -130,7 +130,7 @@ async def test_import_workflow_reports_counts_and_duplicates(tmp_path):
         await pilot.pause()
         assert isinstance(app.screen, DuplicatesScreen)
         listing = app.screen.query_one("#duplicates-list", Static).content
-        assert "W1AW | N0CALL | 20240101 | 1200 | 20m | SSB" in listing
+        assert "W1AW | N0CALL | 20240101 | 1200 | 20M | SSB" in listing
         await pilot.click("#close-btn")
         await pilot.pause()
         assert isinstance(app.screen, MainScreen)

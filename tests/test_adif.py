@@ -138,8 +138,8 @@ def test_import_counts_inserts_and_duplicates(conn, config):
     assert second.parsed == 2
     assert second.inserted == 0
     assert second.duplicates == [
-        ("W1AW", "N0CALL", "20240101", "1200", "20m", "SSB"),
-        ("k1zz", "", "20240202", "1300", "40m", "CW",),
+        ("W1AW", "N0CALL", "20240101", "1200", "20M", "SSB"),
+        ("K1ZZ", "", "20240202", "1300", "40M", "CW",),
     ]
 
 

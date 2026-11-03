@@ -62,7 +62,7 @@ def test_uniqueness_enforced_on_six_key_columns(conn):
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             "INSERT INTO QSOs (CALL, STATION_CALLSIGN, QSO_DATE, TIME_ON, BAND, MODE)"
-            " VALUES ('W1AW', 'N0CALL', '20240101', '1200', '20m', 'SSB')"
+            " VALUES ('W1AW', 'N0CALL', '20240101', '1200', '20M', 'SSB')"
         )
 
 
@@ -84,9 +84,9 @@ def test_insert_returns_count_and_duplicate_keys(conn):
     )
     assert inserted == 1
     assert duplicates == [
-        ("W1AW", "N0CALL", "20240101", "1200", "20m", "SSB"),
-        ("W1AW", "N0CALL", "20240101", "1200", "40m", "SSB"),
-        ("K1ZZ", "N0CALL", "20240101", "1200", "20m", "SSB"),
+        ("W1AW", "N0CALL", "20240101", "1200", "20M", "SSB"),
+        ("W1AW", "N0CALL", "20240101", "1200", "40M", "SSB"),
+        ("K1ZZ", "N0CALL", "20240101", "1200", "20M", "SSB"),
     ]
 
 
@@ -94,7 +94,7 @@ def test_insert_detects_within_batch_duplicates(conn):
     inserted, duplicates = db.insert_qsos(conn, [make_qso(), make_qso()])
     assert inserted == 1
     assert duplicates == [
-        ("W1AW", "N0CALL", "20240101", "1200", "20m", "SSB")
+        ("W1AW", "N0CALL", "20240101", "1200", "20M", "SSB")
     ]
 
 
@@ -183,7 +183,7 @@ def test_mark_received_logs_key_columns_and_changes(conn, caplog):
     qso_id = db.search_qsos(conn, "W1AW")[0]["id"]
     with caplog.at_level(logging.INFO, logger="qsltracker"):
         assert db.mark_received(conn, [qso_id], "D") == 1
-    assert "W1AW N0CALL 20240101 1200 20m SSB" in caplog.text
+    assert "W1AW N0CALL 20240101 1200 20M SSB" in caplog.text
     assert "QSL_RCVD ''->'Y'" in caplog.text
     assert "QSL_RCVD_VIA ''->'D'" in caplog.text
 
@@ -216,6 +216,22 @@ def test_inserts_are_not_logged(conn, caplog):
     with caplog.at_level(logging.INFO, logger="qsltracker"):
         db.insert_qsos(conn, [make_qso()])
     assert caplog.text == ""
+
+
+def test_call_mode_band_stored_uppercase(conn):
+    db.insert_qsos(conn, [make_qso(call="w1aw", band="20m", mode="ssb")])
+    row = db.search_qsos(conn, "W1AW")[0]
+    assert (row["CALL"], row["BAND"], row["MODE"]) == ("W1AW", "20M", "SSB")
+
+
+def test_duplicates_detected_across_case(conn):
+    inserted, _ = db.insert_qsos(conn, [make_qso(call="W1AW")])
+    assert inserted == 1
+    inserted, duplicates = db.insert_qsos(conn, [make_qso(call="w1aw")])
+    assert inserted == 0
+    assert duplicates == [
+        ("W1AW", "N0CALL", "20240101", "1200", "20M", "SSB")
+    ]
 
 
 def test_connect_creates_schema_and_default_db_path(tmp_path, monkeypatch):
