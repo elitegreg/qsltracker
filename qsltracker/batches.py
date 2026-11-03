@@ -207,6 +207,7 @@ def export_batch(
 
     base_path = Path(base)
     qsos_path = base_path.parent / f"{base_path.name}_qsos.csv"
+    qsos_path.parent.mkdir(parents=True, exist_ok=True)
     with qsos_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(qsos_header(qsos_per_label))

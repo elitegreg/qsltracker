@@ -17,15 +17,37 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Button, Footer, Header, Input, Label, Static
+from textual.widgets import (
+    Button,
+    DataTable,
+    Footer,
+    Header,
+    Input,
+    Label,
+    Select,
+    Static,
+)
 
 from qsltracker.adif import ImportResult, import_adif_file
+from qsltracker.batches import (
+    BatchError,
+    add_qsos_to_batch,
+    export_batch,
+    list_batches,
+)
 from qsltracker.config import (
     DEFAULT_QSOS_PER_LABEL,
     Config,
     save_config,
 )
-from qsltracker.db import connect
+from qsltracker.db import (
+    connect,
+    list_all_qsos,
+    mark_queued_to_send,
+    mark_received,
+    search_qsos,
+)
+from qsltracker.qrz import QrzService
 
 
 def config_from_fields(values: dict[str, str]) -> Config:
@@ -68,6 +90,151 @@ def format_import_result(result: ImportResult) -> str:
 def format_duplicate_key(key: tuple[Any, ...]) -> str:
     """Render one 6-column duplicate key for display."""
     return " | ".join(str(part) if part != "" else "-" for part in key)
+
+
+def is_unreceived(qso: dict[str, Any]) -> bool:
+    """True when a QSO has no received QSL card."""
+    return (qso.get("QSL_RCVD") or "") not in ("Y", "I", "V")
+
+
+def is_unsent(qso: dict[str, Any]) -> bool:
+    """True when a QSO has no sent QSL card."""
+    return (qso.get("QSL_SENT") or "") != "Y"
+
+
+class ViaModal(ModalScreen):
+    """Prompt for the received-via channel (Direct or Bureau)."""
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Label("Card received via:"),
+            Button("Direct (D)", id="via-direct", variant="primary"),
+            Button("Bureau (B)", id="via-bureau", variant="primary"),
+            Button("Cancel", id="via-cancel"),
+            id="via-dialog",
+        )
+
+    def _choose(self, via: str | None) -> None:
+        self.app.pop_screen()
+        screen = self.app.screen
+        if via is not None and isinstance(screen, MainScreen):
+            screen.apply_mark_received(via)
+
+    @on(Button.Pressed, "#via-direct")
+    def choose_direct(self) -> None:
+        self._choose("D")
+
+    @on(Button.Pressed, "#via-bureau")
+    def choose_bureau(self) -> None:
+        self._choose("B")
+
+    @on(Button.Pressed, "#via-cancel")
+    def cancel(self) -> None:
+        self._choose(None)
+
+
+class BatchModal(ModalScreen):
+    """Prompt for the batch name to add the selected QSOs to."""
+
+    def compose(self) -> ComposeResult:
+        app = self.app
+        initial = app.last_batch_name if isinstance(app, QsltrackerApp) else ""
+        yield Vertical(
+            Label("Batch name:"),
+            Input(initial or "", id="batch-name"),
+            Static("", id="batch-error"),
+            Button("Add to batch", id="batch-add", variant="primary"),
+            Button("Cancel", id="batch-cancel"),
+            id="batch-dialog",
+        )
+
+    @on(Button.Pressed, "#batch-add")
+    def add_to_batch(self) -> None:
+        name = self.query_one("#batch-name", Input).value.strip()
+        if not name:
+            self.query_one("#batch-error", Static).update("Enter a batch name.")
+            return
+        self.app.pop_screen()
+        screen = self.app.screen
+        if isinstance(screen, MainScreen):
+            try:
+                added = add_qsos_to_batch(screen.app.db, name, screen.selected)
+            except BatchError as exc:
+                screen.set_op_result(str(exc))
+                return
+            screen.app.last_batch_name = name
+            screen.set_op_result(f"Added {added} QSOs to batch {name!r}.")
+
+    @on(Button.Pressed, "#batch-cancel")
+    def cancel(self) -> None:
+        self.app.pop_screen()
+
+
+class ExportModal(ModalScreen):
+    """Prompt for the batch to export and the base output path."""
+
+    def compose(self) -> ComposeResult:
+        batches = list_batches(self.app.db)
+        yield Vertical(
+            Label("Batch to export:"),
+            Select(
+                [(name, name) for name in batches],
+                id="export-batch",
+                prompt="Select a batch",
+            )
+            if batches
+            else Static("No batches yet — add QSOs to a batch first."),
+            Label("Base output path:"),
+            Input(placeholder="/tmp/labels/spring", id="export-base"),
+            Static("", id="export-error"),
+            Button("Export", id="export-go", variant="primary"),
+            Button("Cancel", id="export-cancel"),
+            id="export-dialog",
+        )
+
+    @on(Button.Pressed, "#export-go")
+    def run_export(self) -> None:
+        selectors = self.query(Select)
+        name = selectors.first().value if selectors else Select.BLANK
+        base = self.query_one("#export-base", Input).value.strip()
+        if name is Select.BLANK or not name:
+            self.query_one("#export-error", Static).update("Select a batch first.")
+            return
+        if not base:
+            self.query_one("#export-error", Static).update(
+                "Enter a base output path."
+            )
+            return
+        self.app.pop_screen()
+        screen = self.app.screen
+        if not isinstance(screen, MainScreen):
+            return
+        app = screen.app
+        try:
+            result = export_batch(
+                app.db,
+                str(name),
+                base,
+                qsos_per_label=app.config.qsos_per_label,
+                qrz_service=QrzService.from_config(app.config),
+            )
+        except (BatchError, ValueError, OSError) as exc:
+            screen.set_op_result(str(exc))
+            return
+        if result.addresses_path is None:
+            screen.set_op_result(
+                f"Exported {result.labels} labels to {result.qsos_path} "
+                "(bureau batch: no address labels)."
+            )
+        else:
+            screen.set_op_result(
+                f"Exported {result.labels} labels to {result.qsos_path} "
+                f"and {result.addresses_path}."
+            )
+
+    @on(Button.Pressed, "#export-cancel")
+    def cancel(self) -> None:
+        self.app.pop_screen()
 
 
 class ConfigScreen(Screen):
@@ -148,8 +315,26 @@ class DuplicatesScreen(ModalScreen):
         self.app.pop_screen()
 
 
+TABLE_COLUMNS = (
+    ("sel", "✓"),
+    ("CALL", "Call"),
+    ("QSO_DATE", "Date"),
+    ("TIME_ON", "Time"),
+    ("BAND", "Band"),
+    ("MODE", "Mode"),
+    ("QSL_RCVD", "Rcvd"),
+    ("QSL_SENT", "Sent"),
+    ("QSL_SENT_VIA", "Via"),
+)
+
+
 class MainScreen(Screen):
-    """Main screen: status, ADIF import, and duplicate inspection."""
+    """Main screen: import, search, selection, and QSL/batch operations."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[dict[str, Any]] = []
+        self.selected: set[int] = set()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -160,13 +345,34 @@ class MainScreen(Screen):
             Button("Import ADIF", id="import-btn", variant="primary"),
             Static("", id="import-result"),
             Button("View duplicates", id="duplicates-btn", disabled=True),
+            Label("Callsign search"),
+            Input(placeholder="W1AW (blank shows all)", id="search-input"),
+            Button("Search", id="search-btn", variant="primary"),
+            DataTable(id="qso-table"),
+            Static("", id="selection-line"),
+            Button("Select all", id="select-all"),
+            Button("Select unreceived", id="select-unreceived"),
+            Button("Select unsent", id="select-unsent"),
+            Button("Clear selection", id="select-clear"),
+            Button("Mark received…", id="op-received", variant="primary"),
+            Button("Mark queued to send", id="op-queued"),
+            Button("Add to batch…", id="op-batch"),
+            Button("Add to last batch", id="op-last-batch"),
+            Button("Update from QRZ", id="op-qrz"),
+            Button("Export batch…", id="op-export"),
+            Static("", id="op-result"),
             Button("Quit", id="quit-btn"),
             id="main",
         )
         yield Footer()
 
     def on_mount(self) -> None:
+        table = self.query_one("#qso-table", DataTable)
+        table.cursor_type = "row"
+        for key, label in TABLE_COLUMNS:
+            table.add_column(label, key=key)
         self.refresh_status()
+        self.refresh_table()
 
     def refresh_status(self) -> None:
         app = self.app
@@ -178,6 +384,149 @@ class MainScreen(Screen):
             f"Config: {app.config_path} | DB: {app.db_path} | "
             f"QSOs/label: {app.config.qsos_per_label} | QSOs in DB: {total}"
         )
+
+    def refresh_table(self) -> None:
+        """Reload the table from the last search, keeping valid selections."""
+        table = self.query_one("#qso-table", DataTable)
+        table.clear()
+        shown = set()
+        for qso in self.rows:
+            shown.add(qso["id"])
+            table.add_row(
+                "✓" if qso["id"] in self.selected else "",
+                *(str(qso.get(column) or "") for _, column in TABLE_COLUMNS[1:]),
+                key=str(qso["id"]),
+            )
+        self.selected &= shown
+        self.update_selection_line()
+
+    def update_selection_line(self) -> None:
+        self.query_one("#selection-line", Static).update(
+            f"{len(self.rows)} QSOs shown, {len(self.selected)} selected."
+        )
+
+    def set_op_result(self, message: str) -> None:
+        self.query_one("#op-result", Static).update(message)
+
+    def run_search(self, call: str) -> None:
+        call = call.strip()
+        if call:
+            self.rows = search_qsos(self.app.db, call)
+        else:
+            self.rows = list_all_qsos(self.app.db)
+        self.refresh_table()
+
+    @on(Button.Pressed, "#search-btn")
+    def perform_search(self) -> None:
+        self.run_search(self.query_one("#search-input", Input).value)
+
+    def toggle_row(self, qso_id: int) -> None:
+        if qso_id in self.selected:
+            self.selected.discard(qso_id)
+        else:
+            self.selected.add(qso_id)
+        self.query_one("#qso-table", DataTable).update_cell(
+            str(qso_id), "sel", "✓" if qso_id in self.selected else ""
+        )
+        self.update_selection_line()
+
+    @on(DataTable.RowSelected, "#qso-table")
+    def toggle_selected_row(self, event: DataTable.RowSelected) -> None:
+        try:
+            self.toggle_row(int(event.row_key.value))
+        except (TypeError, ValueError):
+            return
+
+    def select_where(self, predicate) -> None:
+        self.selected = {
+            qso["id"] for qso in self.rows if predicate(qso)
+        }
+        self.refresh_table()
+
+    @on(Button.Pressed, "#select-all")
+    def select_all(self) -> None:
+        self.select_where(lambda _qso: True)
+
+    @on(Button.Pressed, "#select-unreceived")
+    def select_unreceived(self) -> None:
+        self.select_where(is_unreceived)
+
+    @on(Button.Pressed, "#select-unsent")
+    def select_unsent(self) -> None:
+        self.select_where(is_unsent)
+
+    @on(Button.Pressed, "#select-clear")
+    def clear_qso_selection(self) -> None:
+        # Named to avoid overriding Screen.clear_selection(), which the
+        # framework calls on every forwarded mouse event.
+        self.select_where(lambda _qso: False)
+
+    def apply_mark_received(self, via: str) -> None:
+        if not self.selected:
+            self.set_op_result("Select at least one QSO first.")
+            return
+        count = mark_received(self.app.db, sorted(self.selected), via)
+        self.set_op_result(f"Marked {count} QSOs received via {via}.")
+        self.run_search(self.query_one("#search-input", Input).value)
+
+    @on(Button.Pressed, "#op-received")
+    def mark_received_prompt(self) -> None:
+        if not self.selected:
+            self.set_op_result("Select at least one QSO first.")
+            return
+        self.app.push_screen(ViaModal())
+
+    @on(Button.Pressed, "#op-queued")
+    def mark_queued(self) -> None:
+        if not self.selected:
+            self.set_op_result("Select at least one QSO first.")
+            return
+        count = mark_queued_to_send(self.app.db, sorted(self.selected))
+        self.set_op_result(f"Marked {count} QSOs queued to send.")
+        self.run_search(self.query_one("#search-input", Input).value)
+
+    @on(Button.Pressed, "#op-batch")
+    def add_to_batch_prompt(self) -> None:
+        if not self.selected:
+            self.set_op_result("Select at least one QSO first.")
+            return
+        self.app.push_screen(BatchModal())
+
+    @on(Button.Pressed, "#op-last-batch")
+    def add_to_last_batch(self) -> None:
+        if not self.selected:
+            self.set_op_result("Select at least one QSO first.")
+            return
+        name = self.app.last_batch_name
+        if not name:
+            self.app.push_screen(BatchModal())
+            return
+        try:
+            added = add_qsos_to_batch(self.app.db, name, self.selected)
+        except BatchError as exc:
+            self.set_op_result(str(exc))
+            return
+        self.set_op_result(f"Added {added} QSOs to batch {name!r}.")
+
+    @on(Button.Pressed, "#op-qrz")
+    def update_from_qrz(self) -> None:
+        if not self.selected:
+            self.set_op_result("Select at least one QSO first.")
+            return
+        try:
+            service = QrzService.from_config(self.app.config)
+            updated = service.update_qsos_from_qrz(
+                self.app.db, sorted(self.selected)
+            )
+        except Exception as exc:
+            self.set_op_result(f"QRZ update failed: {exc}")
+            return
+        self.set_op_result(f"Updated {updated} QSOs from QRZ.")
+        self.run_search(self.query_one("#search-input", Input).value)
+
+    @on(Button.Pressed, "#op-export")
+    def export_prompt(self) -> None:
+        self.app.push_screen(ExportModal())
 
     @on(Button.Pressed, "#import-btn")
     def import_adif(self) -> None:
@@ -199,6 +548,7 @@ class MainScreen(Screen):
         result_widget.update(format_import_result(result))
         self.query_one("#duplicates-btn", Button).disabled = not result.duplicates
         self.refresh_status()
+        self.run_search(self.query_one("#search-input", Input).value)
 
     @on(Button.Pressed, "#duplicates-btn")
     def view_duplicates(self) -> None:
@@ -231,6 +581,7 @@ class QsltrackerApp(App):
         self.needs_config = needs_config
         self._db: sqlite3.Connection | None = None
         self.last_result: ImportResult | None = None
+        self.last_batch_name: str | None = None
 
     @property
     def db(self) -> sqlite3.Connection:

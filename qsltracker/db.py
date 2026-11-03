@@ -183,6 +183,12 @@ def search_qsos(conn: sqlite3.Connection, call: str) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def list_all_qsos(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return every QSO ordered by id (used for a blank search)."""
+    rows = conn.execute("SELECT * FROM QSOs ORDER BY id").fetchall()
+    return [dict(row) for row in rows]
+
+
 def _update_ids(
     conn: sqlite3.Connection, set_clause: str, params: list[Any], qso_ids: Iterable[int]
 ) -> int:
